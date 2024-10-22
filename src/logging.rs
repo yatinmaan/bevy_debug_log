@@ -5,6 +5,7 @@ use bevy::a11y::AccessibilityNode;
 use bevy::color::palettes::css;
 use bevy::log::{BoxedLayer, Level};
 use bevy::render::view::visibility::RenderLayers;
+use bevy::utils::tracing::level_filters::LevelFilter;
 use bevy::{
     log::tracing_subscriber::{self, Layer},
     prelude::*,
@@ -54,7 +55,8 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
                     message,
                     metadata: event.metadata(),
                 })
-                .expect("LogEvents resource no longer exists!");
+                .inspect_err(|e| panic!("Failed to send log event: {}", e))
+                .ok();
         }
     }
 }
@@ -70,24 +72,53 @@ impl tracing::field::Visit for CaptureLayerVisitor<'_> {
     }
 }
 
-pub fn plugin(app: &mut App) {
-    app.add_event::<LogEvent>();
-    app.add_systems(Update, transfer_log_events);
+pub struct LogViewerPlugin {
+    auto_open_threshold: LevelFilter,
+}
 
-    app.observe(handle_log_viewer_visibilty);
-    app.observe(handle_log_viewer_fullscreen);
-    app.observe(handle_log_viewer_clear);
+impl Default for LogViewerPlugin {
+    fn default() -> Self {
+        Self {
+            auto_open_threshold: LevelFilter::OFF,
+        }
+    }
+}
 
-    app.add_systems(Startup, setup_log_viewer_ui);
-    app.add_systems(
-        Update,
-        (
-            update_log_ui,
-            on_close_button,
-            on_fullscreen_button,
-            on_clear_button,
-        ),
-    );
+impl LogViewerPlugin {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn auto_open_threshold(mut self, level_filter: LevelFilter) -> Self {
+        self.auto_open_threshold = level_filter;
+        self
+    }
+}
+
+impl Plugin for LogViewerPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_event::<LogEvent>();
+        app.add_systems(Update, transfer_log_events);
+
+        app.insert_resource(LogViewer {
+            auto_open_threshold: self.auto_open_threshold,
+            ..default()
+        });
+        app.observe(handle_log_viewer_visibilty);
+        app.observe(handle_log_viewer_fullscreen);
+        app.observe(handle_log_viewer_clear);
+
+        app.add_systems(Startup, setup_log_viewer_ui);
+        app.add_systems(
+            Update,
+            (
+                update_log_ui,
+                on_close_button,
+                on_fullscreen_button,
+                on_clear_button,
+            ),
+        );
+    }
 }
 
 pub fn log_capture_layer(app: &mut App) -> Option<BoxedLayer> {
@@ -101,10 +132,21 @@ pub fn log_capture_layer(app: &mut App) -> Option<BoxedLayer> {
     Some(layer.boxed())
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct LogViewer {
     visible: bool,
     fullscreen: bool,
+    auto_open_threshold: LevelFilter,
+}
+
+impl Default for LogViewer {
+    fn default() -> Self {
+        Self {
+            auto_open_threshold: LevelFilter::OFF,
+            visible: false,
+            fullscreen: false,
+        }
+    }
 }
 
 #[derive(Event, Reflect, Debug, Clone, Copy)]
@@ -143,8 +185,6 @@ struct SizeButton;
 struct ClearButton;
 
 fn setup_log_viewer_ui(mut commands: Commands) {
-    commands.insert_resource(LogViewer::default());
-
     commands.spawn((
         Camera2dBundle {
             camera: Camera {
@@ -423,6 +463,7 @@ fn update_log_ui(
     mut events: EventReader<LogEvent>,
     mut commands: Commands,
     mut query: Query<Entity, With<ListMarker>>,
+    log_viewer_res: Res<LogViewer>,
 ) {
     for e in events.read() {
         if let Ok(parent) = query.get_single_mut() {
@@ -436,6 +477,10 @@ fn update_log_ui(
                 .id();
 
             commands.entity(parent).insert_children(0, &[child_entity]);
+        }
+        // If the log viewer is not visible, check if the log event should trigger it to open.
+        if !log_viewer_res.visible && *e.metadata.level() <= log_viewer_res.auto_open_threshold {
+            commands.trigger(LogViewerVisibility::Show);
         }
     }
 }
