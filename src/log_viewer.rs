@@ -362,7 +362,7 @@ fn on_drag_scroll(
     mut log_viewer_state: ResMut<LogViewerState>,
 ) {
     if let Ok(mut scroll_position) = scroll_positions.get_mut(drag.entity()) {
-        scroll_position.offset_y -= drag.delta.y;
+        scroll_position.offset_y -= drag.delta.y * 0.67;
         log_viewer_state.scroll_state = ScrollState::Manual;
     }
 }
